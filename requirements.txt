@@ -1,0 +1,17 @@
+torch>=2.1
+torchvision
+diffusers>=0.30.0
+transformers>=4.41.0
+accelerate>=0.30.0
+peft>=0.11.0
+safetensors
+face-alignment>=1.4.1
+opencv-python-headless
+scikit-image
+insightface>=0.7.3
+onnxruntime-gpu
+gradio>=4.0
+numpy
+pillow
+tqdm
+pytest
