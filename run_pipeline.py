@@ -57,7 +57,7 @@ def label(img, text, height=28):
 def results_sheet(aligned: Path, rows: list[tuple[str, list, list]], out_path: Path, thumb: int = 256):
     from PIL import Image, ImageDraw
 
-    refs = [Image.open(p).convert("RGB").resize((thumb, thumb)) for p in sorted(aligned.glob("*.png"))[:4]]
+    refs = [Image.open(p).convert("RGB").resize((thumb, thumb)) for p in sorted(aligned.iterdir()) if p.suffix.lower() in IMAGE_EXTS][:4]
     lines = [("Your photos (aligned)", [label(r, "real photo") for r in refs])]
     for prompt, imgs, scores in rows:
         tiles = []
@@ -87,6 +87,8 @@ def main():
     ap.add_argument("--steps", type=int, default=800, help="training steps")
     ap.add_argument("--images_per_prompt", type=int, default=4)
     ap.add_argument("--skip_training", action="store_true", help="reuse an existing outputs/lora")
+    ap.add_argument("--skip_align", action="store_true",
+                    help="photos are already aligned face crops (e.g. from scripts/get_demo_faces.py)")
     args = ap.parse_args()
 
     import torch
@@ -100,8 +102,17 @@ def main():
     gen_dir, base_dir = ROOT / "outputs/generated", ROOT / "outputs/baseline"
 
     # Steps 1-2: find, align and crop the faces
-    run(["src/face_prep.py", "--input", str(find_photo_folder(args.photos)), "--output", str(aligned)])
-    n_aligned = len(list(aligned.glob("*.png")))
+    photo_dir = find_photo_folder(args.photos)
+    if args.skip_align:
+        import shutil
+
+        aligned.mkdir(parents=True, exist_ok=True)
+        for p in photo_dir.iterdir():
+            if p.suffix.lower() in IMAGE_EXTS:
+                shutil.copy(p, aligned / (p.stem + ".png") if p.suffix.lower() == ".png" else aligned / p.name)
+    else:
+        run(["src/face_prep.py", "--input", str(photo_dir), "--output", str(aligned)])
+    n_aligned = len([p for p in aligned.iterdir() if p.suffix.lower() in IMAGE_EXTS])
     if n_aligned < 3:
         raise SystemExit(f"Only {n_aligned} photos had a detectable face. Add clearer, front-facing photos.")
 
