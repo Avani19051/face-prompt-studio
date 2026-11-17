@@ -30,7 +30,7 @@ INPUT: 10–20 photos of one person
    Train low-rank adapters in the U-Net's attention layers to denoise this face.
    │
    ▼
-OUTPUT of training: a ~3 MB LoRA file that "knows" the person
+OUTPUT of training: a ~13 MB LoRA file that "knows" the person
    │
    ▼
 5. Prompting ── any prompt containing "sks person"
@@ -66,7 +66,7 @@ OUTPUT: identity-preserving generated images + similarity scores
 
 ### Step 4 — LoRA fine-tuning
 - **What:** adapt Stable Diffusion to this identity without retraining the 860 M-parameter U-Net.
-- **Why:** full fine-tuning needs far more memory and tends to overfit on 15 photos. LoRA learns a small low-rank update `W + B·A` on top of each frozen weight, so it fits on a free T4 GPU and gives a file of a few MB.
+- **Why:** full fine-tuning needs far more memory and tends to overfit on 15 photos. LoRA learns a small low-rank update `W + B·A` on top of each frozen weight, so it fits on a free T4 GPU. At rank 16 that is 3.2 M trainable parameters (0.4% of the U-Net), saved as a ~13 MB file.
 - **How:**
   1. Encode the photo into a latent with the VAE: `z0 = VAE(x) · 0.18215`.
   2. Pick a random timestep `t` and add Gaussian noise: `zt = √ᾱt · z0 + √(1−ᾱt) · ε`.
@@ -113,6 +113,20 @@ python src/evaluate_identity.py --reference_dir data/aligned --generated_dir out
 python app.py --lora_dir outputs/lora --reference_dir data/aligned --share
 ```
 
+**Free GPUs:** training needs an NVIDIA GPU with CUDA. Both of these are free and come with PyTorch and CUDA already installed:
+
+- **Google Colab:** use the notebook badge above, then Runtime → Change runtime type → T4 GPU. Free access isn't guaranteed at busy times.
+- **Kaggle Notebooks:** about 30 GPU hours a week (a P100 or 2× T4). Upload your photos as a private Kaggle dataset. In a new notebook, turn on *Settings → Accelerator → GPU T4* and *Internet*, then run:
+
+  ```bash
+  !git clone -q https://github.com/Avani19051/face-prompt-studio.git && cd face-prompt-studio && pip -q install -r requirements.txt
+  !cd face-prompt-studio && python src/face_prep.py --input /kaggle/input/<your-dataset> --output data/aligned \
+      && python src/train_lora.py --instance_dir data/aligned --output_dir outputs/lora \
+      && python src/generate.py --lora_dir outputs/lora -p "a portrait of sks person as an astronaut" -n 4
+  ```
+
+**Run the tests (no GPU needed):** `pytest -q tests`. The smoke test trains and generates with a tiny random-weight Stable Diffusion to check the code paths; image quality needs the real model on a GPU.
+
 **Photo tips:** 10–20 photos, different angles, expressions, lighting and backgrounds, one person per photo, no sunglasses. Variety matters more than quantity.
 
 ## 4. Project structure
@@ -126,7 +140,10 @@ face-prompt-studio/
 │   └── evaluate_identity.py  # ArcFace identity similarity + baseline comparison
 ├── app.py                    # Gradio demo with per-image identity scores
 ├── notebooks/face_prompt_studio_colab.ipynb
-├── tests/test_face_prep.py   # alignment maths tests (CPU only)
+├── tests/
+│   ├── test_face_prep.py       # alignment, warping and scoring tests (CPU, no downloads)
+│   ├── test_pipeline_smoke.py  # train → save → load → generate on a tiny random SD (CPU, ~30 s)
+│   └── make_tiny_sd.py         # builds that tiny model
 └── requirements.txt
 ```
 

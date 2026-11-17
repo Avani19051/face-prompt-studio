@@ -29,7 +29,9 @@ def load_pipeline(lora_dir: str | None, base_model: str | None = None, lora_scal
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
 
-    pipe = StableDiffusionPipeline.from_pretrained(base_model, torch_dtype=dtype, safety_checker=None).to(device)
+    pipe = StableDiffusionPipeline.from_pretrained(
+        base_model, torch_dtype=dtype, safety_checker=None, requires_safety_checker=False
+    ).to(device)
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
     if lora_dir:
         pipe.load_lora_weights(lora_dir, adapter_name="identity")

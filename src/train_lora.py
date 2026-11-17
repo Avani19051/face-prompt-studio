@@ -3,7 +3,8 @@
 Instead of training an identity encoder (as Face2Diffusion does), we fine-tune
 small low-rank adapters (LoRA) inside the U-Net's attention layers on 10-20
 aligned photos of one person, all captioned "a photo of <token> <class>".
-The base model's weights stay frozen; only ~3 MB of adapter weights are learnt.
+The base model's weights stay frozen; only the adapters are learnt
+(3.2 M parameters at rank 16, about 0.4% of the U-Net).
 
 Training objective (standard latent-diffusion loss):
     z0      = VAE.encode(image) * scaling_factor
@@ -11,7 +12,8 @@ Training objective (standard latent-diffusion loss):
     loss    = || eps - UNet(zt, t, CLIP(caption)) ||^2
 
 The loop is deliberately written out by hand (no Trainer / Accelerate wrapper)
-so every step is visible. It runs on a free Colab T4 (16 GB) in fp16.
+so every step is visible. It runs on a free Colab/Kaggle T4 (16 GB) in fp16,
+and falls back to fp32 on CPU (only useful for testing).
 """
 from __future__ import annotations
 
@@ -90,25 +92,28 @@ def save_lora(unet, out_dir: Path, meta: dict):
 
 
 @torch.no_grad()
-def preview(args, unet, step: int, out_dir: Path):
+def preview(args, unet, step: int, out_dir: Path, device):
     """Render a few validation images with the adapters as they are right now."""
     from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
 
+    dtype = torch.float16 if device.type == "cuda" else torch.float32
     pipe = StableDiffusionPipeline.from_pretrained(
-        args.base_model, unet=unet, torch_dtype=torch.float16, safety_checker=None
-    ).to("cuda")
+        args.base_model, unet=unet, torch_dtype=dtype, safety_checker=None, requires_safety_checker=False
+    ).to(device)
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     pipe.set_progress_bar_config(disable=True)
-    g = torch.Generator("cuda").manual_seed(args.seed)
-    with torch.autocast("cuda"):
-        imgs = pipe(args.validation_prompt, num_images_per_prompt=4, num_inference_steps=25, generator=g).images
+    g = torch.Generator(device).manual_seed(args.seed)
+    with torch.autocast(device.type, enabled=device.type == "cuda"):
+        imgs = pipe(args.validation_prompt, num_images_per_prompt=4, num_inference_steps=25, generator=g,
+                    height=args.resolution, width=args.resolution).images
     grid = Image.new("RGB", (imgs[0].width * 4, imgs[0].height))
     for k, im in enumerate(imgs):
         grid.paste(im, (k * im.width, 0))
     out_dir.mkdir(parents=True, exist_ok=True)
     grid.save(out_dir / f"preview_step{step:05d}.png")
     del pipe
-    torch.cuda.empty_cache()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def main(args):
@@ -116,15 +121,18 @@ def main(args):
     from peft import LoraConfig
     from transformers import CLIPTextModel, CLIPTokenizer
 
-    assert torch.cuda.is_available(), "training needs a GPU (Colab: Runtime > Change runtime type > T4 GPU)"
-    device = torch.device("cuda")
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    if device.type != "cuda":
+        print("warning: no GPU found - training on CPU will be extremely slow (Colab: Runtime > Change runtime type > T4 GPU)")
+    use_fp16 = device.type == "cuda"
+    half = torch.float16 if use_fp16 else torch.float32
     seed_everything(args.seed)
     out_dir = Path(args.output_dir)
 
     # --- frozen pieces of Stable Diffusion -------------------------------------------
     tokenizer = CLIPTokenizer.from_pretrained(args.base_model, subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained(args.base_model, subfolder="text_encoder").to(device, torch.float16)
-    vae = AutoencoderKL.from_pretrained(args.base_model, subfolder="vae").to(device, torch.float16)
+    text_encoder = CLIPTextModel.from_pretrained(args.base_model, subfolder="text_encoder").to(device, half)
+    vae = AutoencoderKL.from_pretrained(args.base_model, subfolder="vae").to(device, half)
     unet = UNet2DConditionModel.from_pretrained(args.base_model, subfolder="unet").to(device)
     scheduler = DDPMScheduler.from_pretrained(args.base_model, subfolder="scheduler")
     for m in (text_encoder, vae, unet):
@@ -134,7 +142,8 @@ def main(args):
     unet.add_adapter(
         LoraConfig(r=args.rank, lora_alpha=args.rank, init_lora_weights="gaussian", target_modules=LORA_TARGETS)
     )
-    unet.enable_gradient_checkpointing()
+    if use_fp16:
+        unet.enable_gradient_checkpointing()
     params = [p for p in unet.parameters() if p.requires_grad]
     print(f"trainable LoRA parameters: {sum(p.numel() for p in params) / 1e6:.2f} M")
 
@@ -142,14 +151,14 @@ def main(args):
     caption = f"a photo of {args.token} {args.class_word}"
     cond = encode_prompt(tokenizer, text_encoder, caption, device)          # (1, 77, 768)
     ds = FaceDataset(args.instance_dir, args.resolution, repeats=100)
-    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
+    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True)
 
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=1e-2)
     warmup = max(1, args.max_steps // 20)
     lr_sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, args.max_steps) / args.max_steps))
     )
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler("cuda", enabled=use_fp16)
 
     # --- training loop ---------------------------------------------------------------
     unet.train()
@@ -160,7 +169,7 @@ def main(args):
         except StopIteration:
             data_iter = iter(dl)
             pixels = next(data_iter)
-        pixels = pixels.to(device, torch.float16)
+        pixels = pixels.to(device, half)
 
         with torch.no_grad():
             latents = vae.encode(pixels).latent_dist.sample() * vae.config.scaling_factor
@@ -169,7 +178,7 @@ def main(args):
         noisy = scheduler.add_noise(latents, noise, t)
         target = noise if scheduler.config.prediction_type == "epsilon" else scheduler.get_velocity(latents, noise, t)
 
-        with torch.autocast("cuda", dtype=torch.float16):
+        with torch.autocast(device.type, dtype=torch.float16, enabled=use_fp16):
             pred = unet(noisy, t, encoder_hidden_states=cond.expand(latents.shape[0], -1, -1)).sample
         loss = F.mse_loss(pred.float(), target.float())
 
@@ -187,7 +196,7 @@ def main(args):
 
         if args.preview_every and step % args.preview_every == 0:
             unet.eval()
-            preview(args, unet, step, out_dir / "previews")
+            preview(args, unet, step, out_dir / "previews", device)
             unet.train()
 
     meta = {
@@ -218,6 +227,8 @@ def parse_args(argv=None):
     ap.add_argument("--preview_every", type=int, default=200, help="0 disables previews")
     ap.add_argument("--validation_prompt", default=None)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--num_workers", type=int, default=2)
+    ap.add_argument("--device", default=None, help="cuda or cpu (default: cuda if available)")
     args = ap.parse_args(argv)
     if args.validation_prompt is None:
         args.validation_prompt = f"a portrait photo of {args.token} {args.class_word}, studio lighting"
