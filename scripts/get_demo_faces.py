@@ -28,8 +28,9 @@ def download(url: str, dest: Path) -> Path:
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")  # renamed only when complete
     print(f"downloading {url}")
-    with urllib.request.urlopen(url) as r, open(dest, "wb") as f:
+    with urllib.request.urlopen(url) as r, open(part, "wb") as f:
         total = int(r.headers.get("Content-Length", 0))
         done = 0
         while chunk := r.read(1 << 22):
@@ -38,6 +39,9 @@ def download(url: str, dest: Path) -> Path:
             if total:
                 print(f"\r  {done / 1e6:.0f} / {total / 1e6:.0f} MB", end="", flush=True)
     print()
+    if total and done != total:
+        raise SystemExit(f"download incomplete ({done} of {total} bytes), please run again")
+    part.rename(dest)
     return dest
 
 
