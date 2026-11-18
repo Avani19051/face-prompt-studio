@@ -139,6 +139,7 @@ Upload your photos as a private Kaggle dataset, create a notebook, turn on **Set
 
 ```bash
 !git clone -q https://github.com/Avani19051/face-prompt-studio.git && cd face-prompt-studio && pip -q install -r requirements.txt
+!pip -q uninstall -y torchao   # Kaggle ships an old torchao that newer peft refuses to work with
 !cd face-prompt-studio && python src/face_prep.py --input /kaggle/input/<your-dataset> --output data/aligned \
     && python src/train_lora.py --instance_dir data/aligned --output_dir outputs/lora \
     && python src/generate.py --lora_dir outputs/lora -p "a portrait of sks person as an astronaut" -n 4
@@ -153,6 +154,10 @@ python src/generate.py --lora_dir outputs/lora -p "sks person as an astronaut, c
 python src/evaluate_identity.py --reference_dir data/aligned --generated_dir outputs/generated  # step 8
 python app.py --lora_dir outputs/lora --reference_dir data/aligned --share     # web demo
 ```
+
+**Troubleshooting:** if training stops with *"Found an incompatible version of torchao"*, run `pip uninstall -y torchao`. Kaggle and some Colab images ship an old version that newer `peft` rejects, and this project doesn't use it.
+
+**No photos of your own?** `python scripts/get_demo_faces.py` downloads 18 photos of one synthetic person from Microsoft's DigiFace-1M (people who don't exist; non-commercial research licence). Then run `python run_pipeline.py --photos data/demo_faces --skip_align`.
 
 **Photo tips:** different angles, expressions, lighting and backgrounds; one person per photo; no sunglasses. Variety matters more than quantity.
 
