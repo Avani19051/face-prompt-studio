@@ -135,7 +135,9 @@ We also generate the same prompts *without* the LoRA. The gap between the two sc
 About 30 minutes in total. Free GPUs aren't always available at busy times; if Colab says none are free, try again later or use Kaggle.
 
 ### Kaggle (free, about 30 GPU hours a week)
-Upload your photos as a private Kaggle dataset, create a notebook, turn on **Settings → Accelerator → GPU T4** and **Internet**, then run:
+[**Open the ready-made Kaggle notebook**](https://www.kaggle.com/code/avanisingh1905/notebookf3402f4cfd) (it runs the demo faces with no photos needed; click *Copy & Edit* to run your own copy).
+
+Or build your own: upload your photos as a private Kaggle dataset, create a notebook, turn on **Settings → Accelerator → GPU T4** and **Internet**, then run:
 
 ```bash
 !git clone -q https://github.com/Avani19051/face-prompt-studio.git && cd face-prompt-studio && pip -q install -r requirements.txt
@@ -157,7 +159,7 @@ python app.py --lora_dir outputs/lora --reference_dir data/aligned --share     #
 
 **Troubleshooting:** if training stops with *"Found an incompatible version of torchao"*, run `pip uninstall -y torchao`. Kaggle and some Colab images ship an old version that newer `peft` rejects, and this project doesn't use it.
 
-**No photos of your own?** `python scripts/get_demo_faces.py` downloads 18 photos of one synthetic person from Microsoft's DigiFace-1M (people who don't exist; non-commercial research licence). Then run `python run_pipeline.py --photos data/demo_faces --skip_align`.
+**No photos of your own?** `python scripts/get_demo_faces.py` downloads 18 photos of one synthetic person from Microsoft's DigiFace-1M (people who don't exist; non-commercial research licence). Then run `python run_pipeline.py --photos data/demo_faces --skip_align --class_word woman --rank 32 --steps 1500`, and afterwards try your own prompts with `python app.py --lora_dir outputs/lora --reference_dir data/demo_faces --share`.
 
 **Photo tips:** different angles, expressions, lighting and backgrounds; one person per photo; no sunglasses. Variety matters more than quantity.
 
