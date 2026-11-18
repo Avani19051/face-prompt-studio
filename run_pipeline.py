@@ -54,7 +54,8 @@ def label(img, text, height=28):
     return out
 
 
-def results_sheet(aligned: Path, rows: list[tuple[str, list, list]], out_path: Path, thumb: int = 256):
+def results_sheet(aligned: Path, rows: list[tuple[str, list, list]], out_path: Path, thumb: int = 256,
+                  scored: bool = True):
     from PIL import Image, ImageDraw
 
     refs = [Image.open(p).convert("RGB").resize((thumb, thumb)) for p in sorted(aligned.iterdir()) if p.suffix.lower() in IMAGE_EXTS][:4]
@@ -62,7 +63,7 @@ def results_sheet(aligned: Path, rows: list[tuple[str, list, list]], out_path: P
     for prompt, imgs, scores in rows:
         tiles = []
         for im, s in zip(imgs, scores):
-            tag = "no face found" if s is None else f"similarity {s:.2f}"
+            tag = "not scored" if not scored else ("no face found" if s is None else f"similarity {s:.2f}")
             tiles.append(label(im.resize((thumb, thumb)), tag))
         lines.append((prompt, tiles))
 
@@ -87,6 +88,8 @@ def main():
     ap.add_argument("--steps", type=int, default=800, help="training steps")
     ap.add_argument("--images_per_prompt", type=int, default=4)
     ap.add_argument("--skip_training", action="store_true", help="reuse an existing outputs/lora")
+    ap.add_argument("--only_score", action="store_true",
+                    help="reuse images already in outputs/generated and outputs/baseline; just score them and redraw the sheet")
     ap.add_argument("--skip_align", action="store_true",
                     help="photos are already aligned face crops (e.g. from scripts/get_demo_faces.py)")
     args = ap.parse_args()
@@ -103,7 +106,11 @@ def main():
 
     # Steps 1-2: find, align and crop the faces
     photo_dir = find_photo_folder(args.photos)
-    if args.skip_align:
+    if args.only_score:
+        args.skip_training = True
+    if args.only_score and aligned.exists():
+        pass
+    elif args.skip_align:
         import shutil
 
         aligned.mkdir(parents=True, exist_ok=True)
@@ -121,28 +128,35 @@ def main():
         run(["src/train_lora.py", "--instance_dir", str(aligned), "--output_dir", str(lora), "--max_steps", str(args.steps)])
 
     # Steps 5-7: generate with and without the LoRA
-    from generate import generate, load_pipeline
-
     gen_dir.mkdir(parents=True, exist_ok=True)
     base_dir.mkdir(parents=True, exist_ok=True)
-    pipe, _ = load_pipeline(str(lora))
-    with_lora = []
-    for i, p in enumerate(PROMPTS):
-        print(f"generating: {p}")
-        imgs = generate(pipe, p, n=args.images_per_prompt, seed=i)
-        for j, im in enumerate(imgs):
-            im.save(gen_dir / f"p{i}_{j}.png")
-        with_lora.append(imgs)
+    if args.only_score:
+        from PIL import Image
 
-    pipe.set_adapters(["identity"], adapter_weights=[0.0])  # same model, LoRA switched off
-    for i, p in enumerate(PROMPTS):
-        for j, im in enumerate(generate(pipe, p, n=args.images_per_prompt, seed=i)):
-            im.save(base_dir / f"p{i}_{j}.png")
-    del pipe
-    torch.cuda.empty_cache()
+        with_lora = [[Image.open(gen_dir / f"p{i}_{j}.png").convert("RGB") for j in range(args.images_per_prompt)]
+                     for i in range(len(PROMPTS))]
+    else:
+        from generate import generate, load_pipeline
+
+        pipe, _ = load_pipeline(str(lora))
+        with_lora = []
+        for i, p in enumerate(PROMPTS):
+            print(f"generating: {p}")
+            imgs = generate(pipe, p, n=args.images_per_prompt, seed=i)
+            for j, im in enumerate(imgs):
+                im.save(gen_dir / f"p{i}_{j}.png")
+            with_lora.append(imgs)
+
+        pipe.set_adapters(["identity"], adapter_weights=[0.0])  # same model, LoRA switched off
+        for i, p in enumerate(PROMPTS):
+            for j, im in enumerate(generate(pipe, p, n=args.images_per_prompt, seed=i)):
+                im.save(base_dir / f"p{i}_{j}.png")
+        del pipe
+        torch.cuda.empty_cache()
 
     # Step 8: identity scores
     rows = [(p, imgs, [None] * len(imgs)) for p, imgs in zip(PROMPTS, with_lora)]
+    scored = False
     try:
         from evaluate_identity import IdentityScorer, evaluate
 
@@ -151,10 +165,11 @@ def main():
         rows = [(p, imgs, [scorer.score(im, ref) for im in imgs]) for p, imgs in zip(PROMPTS, with_lora)]
         print("\nwith LoRA   :", evaluate(scorer, ref, gen_dir, ROOT / "outputs/identity_scores.csv"))
         print("without LoRA:", evaluate(scorer, ref, base_dir))
+        scored = True
     except Exception as e:
         print("identity scoring skipped:", e)
 
-    results_sheet(aligned, rows, ROOT / "outputs/results.png")
+    results_sheet(aligned, rows, ROOT / "outputs/results.png", scored=scored)
 
 
 if __name__ == "__main__":

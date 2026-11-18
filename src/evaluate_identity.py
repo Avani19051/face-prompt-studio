@@ -36,6 +36,12 @@ class IdentityScorer:
         rgb = np.array(image.convert("RGB") if isinstance(image, Image.Image) else image)
         faces = self.app.get(rgb[:, :, ::-1])  # insightface expects BGR
         if not faces:
+            # Tight crops where the face fills the whole frame confuse the detector.
+            # Shrink the face by padding a border around it and try again.
+            pad = rgb.shape[0] // 2
+            padded = np.pad(rgb, ((pad, pad), (pad, pad), (0, 0)), mode="constant", constant_values=127)
+            faces = self.app.get(padded[:, :, ::-1])
+        if not faces:
             return None
         face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         return face.normed_embedding
