@@ -24,6 +24,9 @@ def load_meta(lora_dir: str | Path) -> dict:
 def load_pipeline(lora_dir: str | None, base_model: str | None = None, lora_scale: float = 1.0):
     from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
 
+    from compat import disable_old_torchao_for_peft
+
+    disable_old_torchao_for_peft()
     meta = load_meta(lora_dir) if lora_dir else {}
     base_model = base_model or meta.get("base_model", "stable-diffusion-v1-5/stable-diffusion-v1-5")
     device = "cuda" if torch.cuda.is_available() else "cpu"

@@ -121,6 +121,10 @@ def main(args):
     from peft import LoraConfig
     from transformers import CLIPTextModel, CLIPTokenizer
 
+    from compat import disable_old_torchao_for_peft
+
+    disable_old_torchao_for_peft()
+
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     if device.type != "cuda":
         print("warning: no GPU found - training on CPU will be extremely slow (Colab: Runtime > Change runtime type > T4 GPU)")
