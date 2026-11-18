@@ -20,12 +20,13 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-PROMPTS = [
-    "a portrait photo of sks person as an astronaut, cinematic lighting, detailed",
-    "sks person as a renaissance oil painting, museum lighting",
-    "sks person reading a book in a cozy cafe, 35mm film photo",
-    "a pencil sketch of sks person, detailed, black and white",
+PROMPT_TEMPLATES = [
+    "a close-up portrait photo of {t} as an astronaut, cinematic lighting, detailed face",
+    "a renaissance oil painting portrait of {t}, museum lighting",
+    "a close-up photo of {t} smiling in a cozy cafe, 35mm film photo",
+    "a pencil sketch portrait of {t}, detailed, black and white",
 ]
+PROMPTS = [p.format(t="sks person") for p in PROMPT_TEMPLATES]
 
 
 def find_photo_folder(root: str) -> Path:
@@ -87,6 +88,9 @@ def main():
     ap.add_argument("--photos", required=True, help="folder with 10-20 photos of one person (searched recursively)")
     ap.add_argument("--steps", type=int, default=800, help="training steps")
     ap.add_argument("--images_per_prompt", type=int, default=4)
+    ap.add_argument("--class_word", default="person",
+                    help="what the subject is: 'woman', 'man' or 'person'. A specific word usually learns faster.")
+    ap.add_argument("--rank", type=int, default=16, help="LoRA rank (more = more capacity)")
     ap.add_argument("--skip_training", action="store_true", help="reuse an existing outputs/lora")
     ap.add_argument("--only_score", action="store_true",
                     help="reuse images already in outputs/generated and outputs/baseline; just score them and redraw the sheet")
@@ -95,6 +99,9 @@ def main():
     args = ap.parse_args()
 
     import torch
+
+    global PROMPTS
+    PROMPTS = [p.format(t=f"sks {args.class_word}") for p in PROMPT_TEMPLATES]
 
     if not torch.cuda.is_available():
         raise SystemExit("No CUDA GPU found. On Kaggle: Settings > Accelerator > GPU T4. On Colab: Runtime > Change runtime type > T4 GPU.")
@@ -125,7 +132,8 @@ def main():
 
     # Steps 3-4: train the LoRA
     if not args.skip_training:
-        run(["src/train_lora.py", "--instance_dir", str(aligned), "--output_dir", str(lora), "--max_steps", str(args.steps)])
+        run(["src/train_lora.py", "--instance_dir", str(aligned), "--output_dir", str(lora), "--max_steps", str(args.steps),
+             "--class_word", args.class_word, "--rank", str(args.rank)])
 
     # Steps 5-7: generate with and without the LoRA
     gen_dir.mkdir(parents=True, exist_ok=True)
